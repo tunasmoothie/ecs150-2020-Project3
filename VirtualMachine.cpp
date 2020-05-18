@@ -423,8 +423,23 @@ TVMStatus VMMutexRelease(TVMMutexID mutexID){
     if(!mx->waitingThreads.empty()){
         readyThreadList.push(mx->waitingThreads.back());
         mx->waitingThreads.pop_back();
+        if(readyThreadList.top()->prio > runningThread->prio){
+            TCB* prev = runningThread;
+            prev->state = VM_THREAD_STATE_READY;
+            runningThread = readyThreadList.top();
+            runningThread->state = VM_THREAD_STATE_RUNNING;
+            readyThreadList.pop();
+            readyThreadList.push(prev);
+            MachineResumeSignals(&sigState);
+            MachineContextSwitch(&prev->cntx, &runningThread->cntx);
+        }
     }
 
+    /*
+
+     */
+
+    MachineResumeSignals(&sigState);
     return VM_STATUS_SUCCESS;
 }
 
