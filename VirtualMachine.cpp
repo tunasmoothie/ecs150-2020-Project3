@@ -32,7 +32,7 @@ struct TCB{
 struct Mutex{
     TVMMutexID mid;
     TVMThreadID owner;
-    int status = VM_MUTEX_STATE_UNLOCKED;
+    TVMMutexState state = VM_MUTEX_STATE_UNLOCKED;
     std::vector<TCB*> waitingThreads;
 };
 //=============================================================
@@ -372,49 +372,59 @@ TVMStatus VMMutexQuery(TVMMutexID mutexID, TVMThreadIDRef ownerref){
 }
 
 TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
-    if(mutexID >= mutexList.size())
-        return VM_STATUS_ERROR_INVALID_ID;
-
     MachineSuspendSignals(&sigState);
-    if(mutexList[mutexID]->status == VM_MUTEX_STATE_UNLOCKED){
-        std::cout << "-Locking thread " << runningThread->tid << " on mutex " << mutexList[mutexID]->mid << "\n";
-        mutexList[mutexID]->status = VM_MUTEX_STATE_LOCKED;
-        mutexList[mutexID]->owner = runningThread->tid;
+    Mutex* mx = NULL;
+    for(Mutex* x : mutexList){
+        if(x->mid == mutexID)
+            mx = x;
     }
-    else{
-        mutexList[mutexID]->waitingThreads.insert(mutexList[mutexID]->waitingThreads.begin(), runningThread);
-        TCB* prev = runningThread;
-        prev->state = VM_THREAD_STATE_READY;
-        runningThread = readyThreadList.top();
-        runningThread->state = VM_THREAD_STATE_RUNNING;
-        readyThreadList.pop();
-        std::cout << "-Waiting thread " << prev->tid << " on mutex " << mutexList[mutexID]->mid << "\n";
+    if(mx == NULL){
         MachineResumeSignals(&sigState);
-        MachineContextSwitch(&prev->cntx, &runningThread->cntx);
+        return VM_STATUS_ERROR_INVALID_ID;
+    }
+
+    while(mx->owner != runningThread->tid){
+        if(mx->state == VM_MUTEX_STATE_UNLOCKED && mx->waitingThreads.empty()){
+            mx->state = VM_MUTEX_STATE_LOCKED;
+            mx->owner = runningThread->tid;
+            //std::cout << "-Locking thread " << runningThread->tid << " on mutex " << mutexList[mutexID]->mid << "\n";
+        }
+        else{
+            mx->waitingThreads.insert(mx->waitingThreads.begin(), runningThread);
+            TCB* prev = runningThread;
+            prev->state = VM_THREAD_STATE_READY;
+            runningThread = readyThreadList.top();
+            runningThread->state = VM_THREAD_STATE_RUNNING;
+            readyThreadList.pop();
+            //std::cout << "-Waiting thread " << prev->tid << " on mutex " << mutexList[mutexID]->mid << "\n";
+            //std::cout << "-Switching " << prev->tid << "->" << runningThread->tid << "\n";
+            MachineResumeSignals(&sigState);
+            MachineContextSwitch(&prev->cntx, &runningThread->cntx);
+        }
     }
 
     MachineResumeSignals(&sigState);
-    if(mutexList[mutexID]->owner == runningThread->tid)
-        return VM_STATUS_SUCCESS;
-    else
-        return VM_STATUS_FAILURE;
+    return VM_STATUS_SUCCESS;
 }
 
 TVMStatus VMMutexRelease(TVMMutexID mutexID){
-    if(mutexID >= mutexList.size())
+    Mutex* mx = NULL;
+    for(Mutex* x : mutexList){
+        if(x->mid == mutexID)
+            mx = x;
+    }
+    if(mx == NULL){
+        MachineResumeSignals(&sigState);
         return VM_STATUS_ERROR_INVALID_ID;
+    }
 
-    //if(mutexList[mutexID]->waitingThreads.empty()){
-        mutexList[mutexID]->status = VM_MUTEX_STATE_UNLOCKED;
-        mutexList[mutexID]->owner = 0;
-   //}
-    /*
-    else{
-        mutexList[mutexID]->owner = mutexList[mutexID]->waitingThreads.back()->tid;
-        readyThreadList.push(mutexList[mutexID]->waitingThreads.back());
-        mutexList[mutexID]->waitingThreads.pop_back();
-        //std::cout << "-Mutex " << mutexID << " ownership " << runningThread << "\n";
-    }*/
+    mx->state = VM_MUTEX_STATE_UNLOCKED;
+    mx->owner = 0;
+    if(!mx->waitingThreads.empty()){
+        readyThreadList.push(mx->waitingThreads.back());
+        mx->waitingThreads.pop_back();
+    }
+
     return VM_STATUS_SUCCESS;
 }
 
