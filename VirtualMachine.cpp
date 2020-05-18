@@ -249,8 +249,8 @@ TVMStatus VMFileClose(int fd){
 
 TVMStatus VMFileRead(int fd, void *data, int *length){
     MachineSuspendSignals(&sigState);
-    std::memcpy(sharedMem, data, 512);
     MachineFileRead(fd, sharedMem, *length, &FileCallback, runningThread);
+    std::memcpy(data, sharedMem, *length);
     sharedMem = (char*)sharedMem + *length;
 
     TCB* prev = runningThread;
@@ -266,7 +266,7 @@ TVMStatus VMFileRead(int fd, void *data, int *length){
 
 TVMStatus VMFileWrite(int fd, void *data, int *length){
     MachineSuspendSignals(&sigState);
-    std::memcpy(sharedMem, data, *length);
+    std::memcpy(sharedMem, data, 512);
     MachineFileWrite(fd, sharedMem, *length, &FileCallback, runningThread);
     sharedMem = (char*)sharedMem + *length;
 
@@ -282,7 +282,15 @@ TVMStatus VMFileWrite(int fd, void *data, int *length){
 }
 
 TVMStatus VMFileSeek(int fd, int offset, int whence, int *newoffset){
+    MachineSuspendSignals(&sigState);
     MachineFileSeek(fd, offset, whence, &FileCallback, runningThread);
+    TCB* prev = runningThread;
+    runningThread = readyThreadList.top();
+    readyThreadList.pop();
+    MachineResumeSignals(&sigState);
+    //std::cout << "-Switching " << prev->tid << "->" << runningThread->tid << "\n";
+    MachineContextSwitch(&prev->cntx, &runningThread->cntx);
+    *newoffset = fileResult;
     return VM_STATUS_SUCCESS;
 }
 
