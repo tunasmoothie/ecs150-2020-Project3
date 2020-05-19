@@ -97,6 +97,11 @@ TVMStatus VMStart(int tickms, TVMMemorySize sharedsize, int argc, char *argv[]){
     runningThread->state = VM_THREAD_STATE_RUNNING;
     readyThreadList.pop();
 
+    Mutex* fileMutex = new Mutex();
+    fileMutex->mid = 0;
+    fileMutex->owner = 0;
+    fileMutex->state = VM_MUTEX_STATE_UNLOCKED;
+    mutexList.push_back(fileMutex);
 
     main(argc, argv);
     MachineTerminate();
@@ -262,12 +267,13 @@ void FileCallback(void* calldata, int result){
     //std::cout << "-Thread " <<  callThread->tid << " File Done." << "\n";
     readyThreadList.push(callThread);
     fileResult = result;
-    return;
 }
 
 TVMStatus VMFileOpen(const char *filename, int flags, int mode, int *filedescriptor) {
+    VMMutexAcquire(0, VM_TIMEOUT_INFINITE);
     MachineSuspendSignals(&sigState);
     MachineFileOpen(filename, flags, mode, FileCallback, runningThread);
+    VMMutexRelease(0);
     TCB* prev = runningThread;
     prev->state = VM_THREAD_STATE_READY;
     runningThread = readyThreadList.top();
@@ -281,8 +287,10 @@ TVMStatus VMFileOpen(const char *filename, int flags, int mode, int *filedescrip
 }
 
 TVMStatus VMFileClose(int fd){
+    VMMutexAcquire(0, VM_TIMEOUT_INFINITE);
     MachineSuspendSignals(&sigState);
     MachineFileClose(fd, &FileCallback, runningThread);
+    VMMutexRelease(0);
     TCB* prev = runningThread;
     prev->state = VM_THREAD_STATE_READY;
     runningThread = readyThreadList.top();
@@ -290,12 +298,15 @@ TVMStatus VMFileClose(int fd){
     readyThreadList.pop();
     MachineResumeSignals(&sigState);
     MachineContextSwitch(&prev->cntx, &runningThread->cntx);
+
     return VM_STATUS_SUCCESS;
 }
 
 TVMStatus VMFileRead(int fd, void *data, int *length){
+    VMMutexAcquire(0, VM_TIMEOUT_INFINITE);
     MachineSuspendSignals(&sigState);
     MachineFileRead(fd, sharedMem, *length, &FileCallback, runningThread);
+    VMMutexRelease(0);
     std::memcpy(data, sharedMem, *length);
     sharedMem = (char*)sharedMem + *length;
 
@@ -313,9 +324,11 @@ TVMStatus VMFileRead(int fd, void *data, int *length){
 }
 
 TVMStatus VMFileWrite(int fd, void *data, int *length){
+    VMMutexAcquire(0, VM_TIMEOUT_INFINITE);
     MachineSuspendSignals(&sigState);
     std::memcpy(sharedMem, data, 512);
     MachineFileWrite(fd, sharedMem, *length, &FileCallback, runningThread);
+    VMMutexRelease(0);
     sharedMem = (char*)sharedMem + *length;
 
     TCB* prev = runningThread;
@@ -332,8 +345,10 @@ TVMStatus VMFileWrite(int fd, void *data, int *length){
 }
 
 TVMStatus VMFileSeek(int fd, int offset, int whence, int *newoffset){
+    VMMutexAcquire(0, VM_TIMEOUT_INFINITE);
     MachineSuspendSignals(&sigState);
     MachineFileSeek(fd, offset, whence, &FileCallback, runningThread);
+    VMMutexRelease(0);
     TCB* prev = runningThread;
     prev->state = VM_THREAD_STATE_READY;
     runningThread = readyThreadList.top();
@@ -342,6 +357,7 @@ TVMStatus VMFileSeek(int fd, int offset, int whence, int *newoffset){
     MachineResumeSignals(&sigState);
     //std::cout << "-Switching " << prev->tid << "->" << runningThread->tid << "\n";
     MachineContextSwitch(&prev->cntx, &runningThread->cntx);
+
     *newoffset = fileResult;
     return VM_STATUS_SUCCESS;
 }
@@ -387,7 +403,6 @@ TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
         if(mx->state == VM_MUTEX_STATE_UNLOCKED && mx->waitingThreads.empty()){
             mx->state = VM_MUTEX_STATE_LOCKED;
             mx->owner = runningThread->tid;
-            //std::cout << "-Locking thread " << runningThread->tid << " on mutex " << mutexList[mutexID]->mid << "\n";
         }
         else{
             mx->waitingThreads.insert(mx->waitingThreads.begin(), runningThread);
@@ -396,8 +411,6 @@ TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
             runningThread = readyThreadList.top();
             runningThread->state = VM_THREAD_STATE_RUNNING;
             readyThreadList.pop();
-            //std::cout << "-Waiting thread " << prev->tid << " on mutex " << mutexList[mutexID]->mid << "\n";
-            //std::cout << "-Switching " << prev->tid << "->" << runningThread->tid << "\n";
             MachineResumeSignals(&sigState);
             MachineContextSwitch(&prev->cntx, &runningThread->cntx);
         }
